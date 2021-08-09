@@ -1,0 +1,59 @@
+version: 0.2
+env:
+  git-credential-helper: yes
+phases:
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+      - chmod +x /usr/local/bin/argocd
+      - aws --version
+      - $(aws ecr get-login --region $AWS_DEFAULT_REGION --no-include-email)
+      - REPOSITORY_URI=${REPO_ECR}
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - IMAGE_TAG=${COMMIT_HASH:=latest}
+  build:
+    commands:
+      - echo Build started on `date`
+      - echo Building the Docker image...
+      - chmod +x ./gradlew
+      - ./gradlew build
+      - docker build -t $REPOSITORY_URI:latest .
+      - docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG
+  post_build:
+    commands:
+      - echo Build completed on `date`
+      - echo Pushing the Docker images...
+      - docker push $REPOSITORY_URI:latest
+      - docker push $REPOSITORY_URI:$IMAGE_TAG
+      - git config --global user.email "codebuild@mz.co.kr"
+      - git config --global user.name "devops"
+      - git clone ${OPS_REPO}
+      - cd OperationRepo
+      - URL=$REPOSITORY_URI:$IMAGE_TAG
+      - REPO_ECR_NAME=$(echo "$REPOSITORY_URI" | sed 's:.*/::')
+      - echo $REPO_ECR_NAME
+      - |
+        if [ -d ${APP_NAME} ]
+        then
+        cat ${APP_NAME}/deployment.yaml
+        mv ${APP_NAME}/deployment.yaml ${APP_NAME}/deployment2.yaml
+        echo "Directory already exists"
+        cat ${APP_NAME}/deployment2.yaml | sed -e "1,/${REPO_ECR_NAME}:/s/\(${REPO_ECR_NAME}:\).*/\1${IMAGE_TAG}/" > ${APP_NAME}/deployment.yaml  
+        rm ${APP_NAME}/deployment2.yaml
+        else
+        mkdir ${APP_NAME}
+        cat deployment.yaml | sed "s|{{imageURL}}|$URL|g" | sed "s|{{APP_NAME}}|$APP_NAME|g" > ${APP_NAME}/deployment.yaml
+        cat service.yaml | sed "s|{{APP_NAME}}|$APP_NAME|g" > ${APP_NAME}/service.yaml
+        fi
+      - cat ${APP_NAME}/deployment.yaml
+      - git add .
+      - git commit -m "change repo uri"
+      - git push 
+      - argocd login ${ARGO_URL} --username admin --password ${ARGO_PW} --insecure
+      - |
+        if  argocd app list -o name | grep -Fxq ${APP_NAME} ; then
+        argocd app sync ${APP_NAME}
+        else
+        argocd app create ${APP_NAME} --repo ${OPS_REPO} --path ${APP_NAME} --dest-server https://kubernetes.default.svc --dest-namespace default --sync-policy auto
+        fi
