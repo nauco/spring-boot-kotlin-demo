@@ -50,7 +50,7 @@ phases:
       - git add .
       - git commit -m "change repo uri"
       - git push 
-      - argocd login ${ARGO_URL} --username admin --password ${ARGO_PW} --insecure
+      - argocd login ${ARGO_URL} --username ${ARGO_USER} --password ${ARGO_PW} --insecure
       - |
         if  argocd app list -o name | grep -Fxq ${APP_NAME} ; then
         argocd app sync ${APP_NAME}
